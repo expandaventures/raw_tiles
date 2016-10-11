@@ -83,6 +83,8 @@ if __name__ == '__main__':
             for (x, y) in exp.tiles:
                 queue.put((x, y))
 
+            sqs_queue.delete_messages(Entries=messages)
+
     except Exception, e:
         for i in range(0, num_workers):
             queue.put('END')
