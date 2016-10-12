@@ -12,7 +12,7 @@ class Writer:
         self.io.write(self.packer.pack([fid, bytes(wkb), props]))
 
     def close(self):
-        pass
+        self.io.flush()
 
 
 @contextmanager

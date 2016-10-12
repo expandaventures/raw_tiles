@@ -2,6 +2,7 @@ import raw_tiles.tile_format.msgpack_format as msgpack_format
 from raw_tiles.util import st_box2d_for_tile
 import gzip
 import tempfile
+import os
 
 
 def output_fmt(fmt, conn, table, z, x, y):
@@ -22,7 +23,7 @@ def output_fmt(fmt, conn, table, z, x, y):
 
 
 def output_io(io, conn, table, z, x, y):
-    fh = gzip.GzipFile(fileobj=io, mode='wb', compresslevel=9)
+    fh = gzip.GzipFile(fileobj=io, mode='wb', compresslevel=3)
     with msgpack_format.write(fh) as fmt:
         output_fmt(fmt, conn, table, z, x, y)
     fh.flush()
@@ -32,5 +33,7 @@ def output_io(io, conn, table, z, x, y):
 def output_tile(s3, output_bucket, conn, table, z, x, y):
     with tempfile.NamedTemporaryFile() as tmp:
         output_io(tmp, conn, table, z, x, y)
+        tmp.flush()
+        os.fsync(tmp.fileno())
         key = "%s/%d/%d/%d.msgpack.gz" % (table, z, x, y)
         s3.meta.client.upload_file(tmp.name, output_bucket, key)
