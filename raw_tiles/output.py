@@ -1,6 +1,7 @@
 import raw_tiles.tile_format.msgpack_format as msgpack_format
 from raw_tiles.util import st_box2d_for_tile
 import gzip
+import tempfile
 
 
 def output_fmt(fmt, conn, table, z, x, y):

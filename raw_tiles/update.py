@@ -3,6 +3,8 @@ import psycopg2
 import boto3
 import tempfile
 import multiprocessing as mp
+import json
+import logging
 
 
 class Expiries(object):
@@ -20,27 +22,48 @@ class Expiries(object):
                 self.add_tile_list(source_bucket, key)
 
     def add_tile_list(self, source_bucket, key):
-        obj = self.s3.get_object(Bucket=source_bucket, Key=key)
-        body = obj['Body']
-        # format of tile list is lines of z/x/y
-        for line in body:
-            z, x, y = map(int, line.split('/'))
-            x >>= (self.z - z)
-            y >>= (self.z - z)
-            self.tiles.add((x, y))
+        with tempfile.TemporaryFile() as tmp:
+            bucket = self.s3.Bucket(source_bucket)
+            bucket.download_fileobj(key, tmp)
+            tmp.seek(0)
+
+            # format of tile list is lines of z/x/y
+            for line in tmp:
+                z, x, y = map(int, line.split('/'))
+                x >>= (z - self.z)
+                y >>= (z - self.z)
+                self.tiles.add((x, y))
 
 
-def worker(tables, db_params, z, output_bucket, queue):
-    conn = psycopg2.connect(db_params)
-    s3 = boto3.resource('s3')
+# http://stackoverflow.com/questions/10117073/how-to-use-initializer-to-set-up-my-multiprocess-pool
+worker_context = None
+def worker_init(tables, db_params, z, output_bucket):
+    global worker_context
+    logger = mp.log_to_stderr()
+    logger.setLevel(logging.INFO)
+    worker_context = {
+        'tables': tables,
+        'conn': psycopg2.connect(db_params),
+        's3': boto3.resource('s3'),
+        'output_bucket': output_bucket,
+        'z': z,
+        'logger': logger
+    }
+
+
+def worker(job):
+    global worker_context
 
     try:
-        for (x, y) in iter(queue.get, 'END'):
-            for table in tables:
-                output_tile(s3, output_bucket, conn, table, z, x, y)
+        (x, y) = job
+        logger = worker_context['logger']
+        z = worker_context['z']
+        for table in worker_context['tables']:
+            output_tile(worker_context['s3'], worker_context['output_bucket'],
+                        worker_context['conn'], table, z, x, y)
+            logger.info('Rendered: %s/%d/%d/%d' % (table, z, x, y))
 
     except Exception, e:
-        logger = mp.log_to_stderr()
         logger.error('Failed: %s' % e.message)
 
     return True
@@ -63,29 +86,32 @@ if __name__ == '__main__':
     parser.add_argument("queue", help="SQS queue URL to listen for updates")
     args = parser.parse_args()
 
-    sqs = boto3.client('sqs')
+    sqs = boto3.resource('sqs')
     sqs_queue = sqs.Queue(args.queue)
 
-    queue = mp.Queue()
-    pool = mp.Pool(processes=args.workers)
-    for i in range(0, args.workers):
-        pool.apply_asyc(worker, (args.tables, args.db, args.zoom, args.bucket,
-                                 queue))
+    pool = mp.Pool(processes=args.workers, initializer=worker_init,
+                   initargs=(args.tables, args.db, args.zoom, args.bucket))
 
-    try:
-        while True:
-            exp = Expiries(z)
+    while True:
+        exp = Expiries(args.zoom)
 
-            messages = sqs_queue.receive_messages()
-            for message in messages:
-                exp.process_message(message)
+        messages = sqs_queue.receive_messages()
+        for message in messages:
+            data = json.loads(message.body)
+            exp.process_message(data)
 
-            for (x, y) in exp.tiles:
-                queue.put((x, y))
+        jobs = []
+        for (x, y) in exp.tiles:
+            import sys
+            print>>sys.stderr, "Queueing %d/%d/%d" % (args.zoom, x, y)
+            jobs.append(pool.apply_async(worker, ((x, y),)))
 
-            sqs_queue.delete_messages(Entries=messages)
+        for j in jobs:
+            j.get()
 
-    except Exception, e:
-        for i in range(0, num_workers):
-            queue.put('END')
-        raise
+        if messages:
+            entries = []
+            for m in messages:
+                entries.append({'Id': m.message_id,
+                                'ReceiptHandle': m.receipt_handle})
+            sqs_queue.delete_messages(Entries=entries)
