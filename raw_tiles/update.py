@@ -74,9 +74,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-t", "--tables", action='append',
-                        default=['planet_osm_point', 'planet_osm_line',
-                                 'planet_osm_polygon'],
-                        help="dump these tables")
+                        default=[], help="dump these tables")
     parser.add_argument("-z", "--zoom", type=int, default=10,
                         help="Zoom level to generate tiles at")
     parser.add_argument("-j", "--workers", type=int, default=1,
@@ -88,6 +86,11 @@ if __name__ == '__main__':
 
     sqs = boto3.resource('sqs')
     sqs_queue = sqs.Queue(args.queue)
+
+    # set default if nothing was provided on the command line.
+    tables = args.tables
+    if not tables:
+        tables = ['planet_osm_point', 'planet_osm_line', 'planet_osm_polygon']
 
     pool = mp.Pool(processes=args.workers, initializer=worker_init,
                    initargs=(args.tables, args.db, args.zoom, args.bucket))
